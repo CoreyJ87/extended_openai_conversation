@@ -108,6 +108,46 @@ def _format_structured_output(
     return result
 
 
+def _inject_camera_images(
+    messages: list[ChatCompletionMessageParam],
+) -> list[ChatCompletionMessageParam]:
+    """Post-process messages to inject camera snapshots as user-role vision blocks.
+
+    OpenAI's Chat Completions API only accepts image_url content in user messages,
+    not in tool result messages. When a camera tool result is detected, we replace
+    its serialized JSON with a plain-text acknowledgement and append a user message
+    carrying the actual image so the model can see it.
+    """
+    result: list[ChatCompletionMessageParam] = []
+    for msg in messages:
+        if msg.get("role") == "tool":
+            try:
+                tool_result = json.loads(msg["content"])  # type: ignore[arg-type]
+            except (json.JSONDecodeError, TypeError, KeyError):
+                tool_result = {}
+            if tool_result.get("__camera_image__"):
+                entity_id = tool_result.get("entity_id", "camera")
+                result.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg["tool_call_id"],  # type: ignore[typeddict-item]
+                        "content": f"Camera snapshot captured from {entity_id}. The image is provided in the next message.",
+                    }
+                )
+                result.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"[Camera snapshot from {entity_id}]"},
+                            {"type": "image_url", "image_url": {"url": tool_result["url"]}},
+                        ],
+                    }
+                )
+                continue
+        result.append(msg)
+    return result
+
+
 def _convert_content_to_param(
     chat_content: list[conversation.Content],
     shorten_tool_call_id: bool = False,
@@ -144,12 +184,15 @@ def _convert_content_to_param(
                 msg.pop("tool_calls", None)
             messages.append(msg)
         elif content.role == "tool_result":
+            tool_call_id = (
+                _shorten_tool_call_id(content.tool_call_id)
+                if shorten_tool_call_id
+                else content.tool_call_id
+            )
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": _shorten_tool_call_id(content.tool_call_id)
-                    if shorten_tool_call_id
-                    else content.tool_call_id,
+                    "tool_call_id": tool_call_id,
                     "content": orjson.dumps(content.tool_result).decode(),
                 }
             )
@@ -207,7 +250,9 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
         # Get model-specific configuration
         model_config = get_model_config(model)
 
-        messages = _convert_content_to_param(chat_log.content, shorten_tool_call_id)
+        messages = _inject_camera_images(
+            _convert_content_to_param(chat_log.content, shorten_tool_call_id)
+        )
 
         # Build functions list from custom functions
         tools: list[ChatCompletionToolParam] = [
@@ -325,7 +370,9 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
                 chat_log.async_add_assistant_content_without_tools(tool_result_content)
 
             # Update messages for next iteration
-            messages = _convert_content_to_param(chat_log.content, shorten_tool_call_id)
+            messages = _inject_camera_images(
+                _convert_content_to_param(chat_log.content, shorten_tool_call_id)
+            )
 
             # Check if we need to continue (if there are pending tool results)
             if not chat_log.unresponded_tool_results:
@@ -465,11 +512,16 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
                 self.hass, function_config, arguments, llm_context, exposed_entities
             )
 
+        if isinstance(result, dict) and result.get("__camera_image__"):
+            tool_result_dict = result
+        else:
+            tool_result_dict = {"result": str(result)}
+
         return conversation.ToolResultContent(
             agent_id=self.entity_id,
             tool_call_id=tool_input.id,
             tool_name=tool_input.tool_name,
-            tool_result={"result": str(result)},
+            tool_result=tool_result_dict,
         )
 
     def should_run_in_background(self, arguments: dict[str, Any]) -> bool:

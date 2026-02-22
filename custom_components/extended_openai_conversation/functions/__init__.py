@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..exceptions import FunctionNotFound
 from .base import Function
 from .bash import BashFunction
+from .camera import CameraFunction
 from .composite import CompositeFunction
 from .file import EditFileFunction, ReadFileFunction, WriteFileFunction
 from .native import NativeFunction
@@ -15,6 +16,7 @@ from .web import RestFunction, ScrapeFunction
 
 __all__ = [
     "BashFunction",
+    "CameraFunction",
     "CompositeFunction",
     "EditFileFunction",
     "Function",
@@ -41,6 +43,7 @@ FUNCTIONS: dict[str, Function] = {
     "read_file": ReadFileFunction(),
     "write_file": WriteFileFunction(),
     "edit_file": EditFileFunction(),
+    "camera": CameraFunction(),
 }
 
 
